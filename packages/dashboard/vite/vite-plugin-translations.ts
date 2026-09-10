@@ -5,7 +5,6 @@ import {
     getCatalogs,
 } from '@lingui/cli/api';
 import { getConfig, LinguiConfigNormalized } from '@lingui/conf';
-import { compileMessage, type CompiledMessage } from '@lingui/message-utils/compileMessage';
 import glob from 'fast-glob';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -49,11 +48,11 @@ const resolvedVirtualModuleId = `\0${virtualModuleId}`;
  *
  * It handles 2 modes: dev and build.
  *
- * - The dev case is handled in the `load` function using Vite virtual
- * modules to compile and return translations from plugins _only_, which then get merged with the built-in
+ * - The `load` function serves the `virtual:plugin-translations` module in both dev and build. It
+ * compiles and returns translations from plugins _only_, which then get merged with the built-in
  * translations in the `loadI18nMessages` function
- * - The build case loads both built-in and plugin translations, merges them, and outputs the compiled
- * files as .js files that can be statically consumed by the built app.
+ * - The `generateBundle` function additionally emits the merged built-in and plugin catalogs as .js
+ * files under the `outputPath` directory. Nothing in the dashboard reads those files today.
  *
  * @param options
  */
@@ -103,7 +102,21 @@ export function translationsPlugin(options: TranslationsPluginOptions): Plugin {
                         ${[...mergedMessageMap.entries()]
                             .map(([locale, messages]) => {
                                 const safeLocale = locale.replace(/-/g, '_');
-                                return `${safeLocale}: ${JSON.stringify(compileMessages(messages))}`;
+                                // `@lingui/core` interpolates compiled token arrays, not ICU source
+                                // strings. It registers a runtime compiler of its own only when
+                                // `NODE_ENV !== 'production'`, so an uncompiled catalog here renders
+                                // literally in a built dashboard: `Hello {name}` instead of `Hello Bob`.
+                                const { source, errors } = createCompiledCatalog(locale, messages, {
+                                    namespace: 'json',
+                                    pseudoLocale: cachedLinguiConfig.pseudoLocale,
+                                });
+                                if (errors.length) {
+                                    this.error(createCompilationErrorMessage(locale, errors));
+                                }
+                                const { messages: compiledMessages } = JSON.parse(source) as {
+                                    messages: Record<string, unknown>;
+                                };
+                                return `${safeLocale}: ${JSON.stringify(compiledMessages)}`;
                             })
                             .join(',\n')}
                     };
@@ -267,17 +280,4 @@ async function createMergedMessageMap({
     }
 
     return mergedMessageMap;
-}
-
-/**
- * Built-in catalogs are compiled by `@lingui/vite-plugin` when their `.po` files are imported;
- * plugin catalogs are assembled here into `virtual:plugin-translations` and would otherwise reach
- * `@lingui/core` as raw ICU source strings, which disables interpolation and plurals at runtime.
- */
-function compileMessages(messages: Record<string, string>): Record<string, CompiledMessage> {
-    const compiled: Record<string, CompiledMessage> = {};
-    for (const [id, message] of Object.entries(messages)) {
-        compiled[id] = compileMessage(message);
-    }
-    return compiled;
 }
