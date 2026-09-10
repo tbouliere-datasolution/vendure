@@ -35,7 +35,7 @@ describe('plugin translation catalogs in virtual:plugin-translations', () => {
     const packageRoot = join(__dirname, '..', '..');
     const fixtureRoot = join(__dirname, 'fixtures-plugin-translations');
 
-    async function loadVirtualModule(): Promise<string> {
+    async function loadVirtualModule(root: string = fixtureRoot): Promise<string> {
         const plugin = translationsPlugin({ packageRoot }) as any;
         const configLoaderStub = {
             name: 'vendure:config-loader',
@@ -46,7 +46,7 @@ describe('plugin translation catalogs in virtual:plugin-translations', () => {
                         pluginInfo: [
                             {
                                 name: 'TranslatedPlugin',
-                                pluginPath: join(fixtureRoot, 'src', 'my.plugin.js'),
+                                pluginPath: join(root, 'src', 'my.plugin.js'),
                                 dashboardEntryPath: './dashboard/index.tsx',
                             },
                         ],
@@ -54,7 +54,15 @@ describe('plugin translation catalogs in virtual:plugin-translations', () => {
             },
         };
         plugin.configResolved.call({}, { plugins: [configLoaderStub] });
-        const ctx = { debug: () => undefined, info: () => undefined, warn: () => undefined };
+        const ctx = {
+            debug: () => undefined,
+            info: () => undefined,
+            warn: () => undefined,
+            // Rollup's `PluginContext.error` throws; the plugin relies on that to abort.
+            error: (message: string) => {
+                throw new Error(message);
+            },
+        };
         const result = await plugin.load.call(ctx, '\0virtual:plugin-translations');
         expect(typeof result).toBe('string');
         return result as string;
@@ -92,5 +100,11 @@ describe('plugin translation catalogs in virtual:plugin-translations', () => {
         } finally {
             process.env.NODE_ENV = previousNodeEnv;
         }
+    });
+
+    it('fails the build on malformed plugin ICU instead of emitting it silently', async () => {
+        await expect(
+            loadVirtualModule(join(__dirname, 'fixtures-plugin-translations-malformed')),
+        ).rejects.toThrow(/extension\.broken/);
     });
 });
